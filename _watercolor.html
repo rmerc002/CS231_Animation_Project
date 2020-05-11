@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - geometry - terrain</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<style>
+			body {
+				background-color: #bfd1e5;
+				color: #61443e;
+			}
+			a {
+				color: #a06851;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info">
+			<table style="width:100%; table-layout: fixed;">
+				<tr>
+					<th id="debug0,0">debug0,0</th>
+					<th id="debug0,1">debug0,1</th>
+					<th id="debug0,2">debug0,2</th>
+					<th id="debug0,3">debug0,3</th>
+				</tr>
+				<tr>
+					<th id="debug1,0">debug1,0</th>
+					<th id="debug1,1">debug1,1</th>
+					<th id="debug1,2">debug1,2</th>
+					<th id="debug1,3">debug1,3</th>
+				</tr>
+			</table>
+			<!-- <p id="debug">pre-debug</p> -->
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a>
+			 - webgl terrain raycasting demo
+		</div>
+		<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/104/three.js"></script> -->
+
+		<script type="module">
+
+			import * as THREE from '../build/three.module.js';
+			// import * as Math from './build/math.js';
+
+			import Stats from './jsm/libs/stats.module.js';
+
+			import { OrbitControls } from './jsm/controls/OrbitControls.js';
+			import { ImprovedNoise } from './jsm/math/ImprovedNoise.js';
+
+			var container, stats;
+
+			var camera, controls, scene, renderer;
+
+			var mesh, texture, geometry;
+
+			var worldWidth = 150, worldDepth = 150,
+				worldHalfWidth = worldWidth / 2, worldHalfDepth = worldDepth / 2;
+
+			var helper;
+
+			var raycaster = new THREE.Raycaster();
+			var mouse = new THREE.Vector2();
+
+			// START WATERCOLOR VARS
+			var rows, cols, T, numPigments;
+			var h, m, u, v, p, g, d, s, c, mu, kappa;
+			var tu, tv;
+			var im, pigmentParameters;
+
+			init();
+
+			animate();
+
+			function init() {
+
+				watercolorInit();
+
+				container = document.getElementById( 'container' );
+				container.innerHTML = "";
+
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				container.appendChild( renderer.domElement );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xbfd1e5 );
+
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 10, 20000 );
+
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.minDistance = 1000;
+				controls.maxDistance = 10000;
+				controls.maxPolarAngle = Math.PI / 2;
+
+				//
+
+				var data = getIm();//generateHeight( worldWidth, worldDepth );
+
+				controls.target.y = data[ worldHalfWidth + worldHalfDepth * worldWidth ] + 500;
+				camera.position.y = controls.target.y + 7000;
+				// camera.position.x = 4000;
+				controls.update();
+
+				geometry = new THREE.PlaneBufferGeometry( 7500, 7500, worldWidth - 1, worldDepth - 1 );
+				geometry.rotateX( - Math.PI / 2 );
+
+				var vertices = geometry.attributes.position.array;
+
+				for ( var i = 0, j = 0, l = vertices.length; i < l; i ++, j += 3 ) {
+
+					vertices[ j + 1 ] = data[ i ] * 10;
+
+				}
+
+				geometry.computeFaceNormals(); // needed for helper
+
+				//
+
+				texture = new THREE.CanvasTexture( generateTexture( data, worldWidth, worldDepth ) );
+				texture.wrapS = THREE.ClampToEdgeWrapping;
+				texture.wrapT = THREE.ClampToEdgeWrapping;
+
+				mesh = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { map: texture } ) );
+				scene.add( mesh );
+
+				var geometry = new THREE.ConeBufferGeometry( 20, 100, 3 );
+				geometry.translate( 0, 50, 0 );
+				geometry.rotateX( Math.PI / 2 );
+				helper = new THREE.Mesh( geometry, new THREE.MeshNormalMaterial() );
+				scene.add( helper );
+
+				container.addEventListener( 'mousemove', onMouseMove, false );
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+				//////////////////////
+				///   WATERCOLOR   ///
+				//////////////////////
+				// watercolorInit()
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function generateHeight( width, height ) {
+
+				var size = width * height, data = new Uint8Array( size ),
+					perlin = new ImprovedNoise(), quality = 1, z = Math.random() * 100;
+
+				for ( var j = 0; j < 4; j ++ ) {
+
+					for ( var i = 0; i < size; i ++ ) {
+
+						var x = i % width, y = ~ ~ ( i / width );
+						data[ i ] += Math.abs( perlin.noise( x / quality, y / quality*2, z ) * quality * 1.75 * (3*Math.random() + Math.sin(100*i/size)));
+						// data[i] = m[i];
+					}
+
+					quality *= 1.1;
+
+				}
+
+				return data;
+
+			}
+
+			function generateTexture( data, width, height ) {
+
+				// bake lighting into texture
+
+				var canvas, canvasScaled, context, image, imageData, vector3, sun, shade;
+
+				vector3 = new THREE.Vector3( 0, 0, 0 );
+
+				sun = new THREE.Vector3( 1, 1, 1 );
+				sun.normalize();
+
+				canvas = document.createElement( 'canvas' );
+				canvas.width = width;
+				canvas.height = height;
+
+				context = canvas.getContext( '2d' );
+				context.fillStyle = '#000';
+				context.fillRect( 0, 0, width, height );
+
+				image = context.getImageData( 0, 0, canvas.width, canvas.height );
+				imageData = image.data;
+
+				// for ( var i = 0, j = 0, l = imageData.length; i < l; i += 4, j ++ ) {
+				//
+				// 	vector3.x = data[ j - 2 ] - data[ j + 2 ];
+				// 	vector3.y = 2;
+				// 	vector3.z = data[ j - width * 2 ] - data[ j + width * 2 ];
+				// 	vector3.normalize();
+				//
+				// 	shade = vector3.dot( sun );
+				//
+				// 	imageData[ i ] = 96+shade*128;//( 96 + shade * 128 ) * ( 0.5 + data[ j ] * 0.007 );
+				// 	imageData[ i + 1 ] = 96+shade*128;//( 32 + shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+				// 	imageData[ i + 2 ] = 96+shade*128;//( shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+				//
+				// }
+				for ( var i = 0, j = 0, l = imageData.length; i < l; i += 4, j ++ ) {
+
+					vector3.x = data[ j - 2 ] - data[ j + 2 ];
+					vector3.y = 2;
+					vector3.z = data[ j - width * 2 ] - data[ j + width * 2 ];
+					vector3.normalize();
+
+					shade = (data[j]+2)/4;
+
+					imageData[ i ] = shade*256;//( 96 + shade * 128 ) * ( 0.5 + data[ j ] * 0.007 );
+					imageData[ i + 1 ] = shade*256;//( 32 + shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+					imageData[ i + 2 ] = shade*256;//( shade * 96 ) * ( 0.5 + data[ j ] * 0.007 );
+
+				}
+
+				context.putImageData( image, 0, 0 );
+
+				// Scaled 4x
+
+				canvasScaled = document.createElement( 'canvas' );
+				canvasScaled.width = width * 4;
+				canvasScaled.height = height * 4;
+
+				context = canvasScaled.getContext( '2d' );
+				context.scale( 4, 4 );
+				context.drawImage( canvas, 0, 0 );
+
+				image = context.getImageData( 0, 0, canvasScaled.width, canvasScaled.height );
+				imageData = image.data;
+
+				// for ( var i = 0, l = imageData.length; i < l; i += 4 ) {
+				//
+				// 	let v = ~ ~ ( Math.random() * 5 );
+				//
+				// 	imageData[ i ] += v;
+				// 	imageData[ i + 1 ] += v;
+				// 	imageData[ i + 2 ] += v;
+				//
+				// }
+
+				context.putImageData( image, 0, 0 );
+
+				return canvasScaled;
+
+			}
+
+			//
+
+			function animate() {
+				mainLoop();
+				requestAnimationFrame( animate );
+
+				render();
+
+				stats.update();
+
+			}
+
+			function render() {
+
+				renderer.render( scene, camera );
+
+			}
+
+			function onMouseMove( event ) {
+
+				mouse.x = ( event.clientX / renderer.domElement.clientWidth ) * 2 - 1;
+				mouse.y = - ( event.clientY / renderer.domElement.clientHeight ) * 2 + 1;
+				raycaster.setFromCamera( mouse, camera );
+
+				// See if the ray from the camera into the world hits one of our meshes
+				var intersects = raycaster.intersectObject( mesh );
+
+				// Toggle rotation bool for meshes that we clicked
+				if ( intersects.length > 0 ) {
+
+					helper.position.set( 0, 0, 0 );
+					helper.lookAt( intersects[ 0 ].face.normal );
+
+					helper.position.copy( intersects[ 0 ].point );
+
+				}
+
+			}
+
+			function watercolorInit(){
+
+				T = 0;
+				rows = worldWidth;
+				cols = worldDepth;
+
+				let numPixels = rows*cols;
+				h = generateHeight( rows, cols);
+
+				let cmin = 0.1;
+				let cmax = 0.3;
+				c = new Array(numPixels);
+				for(let i = 0; i < numPixels; i++){
+					c[i] = h[i]*(cmax-cmin)+cmin;
+				}
+
+				m = new Array(numPixels);
+				// m = Math.ones(rows,cols);
+				for(let r = 0; r < rows; r++){
+					for(let c =0; c < cols; c++){
+						// if(c > Math.floor(cols/4) && c < Math.floor(3*cols/4)){
+							m[c + r*cols] = 1;
+						// }
+						// else{
+						// 	m[c + r*cols] = 0;
+						// }
+					}
+				}
+
+				let scale = 0.1;
+				u = new Array(numPixels);
+				for(let r = 0; r < rows; r++){
+					for(let c = 0; c < cols; c++){
+						// u[c + r*cols] = 0;
+						u[c + r*cols] = Math.sin(r*2*Math.PI/(cols));//Math.random()*2-1;//scale;
+						// u[c + r*cols] = Math.random()*2-1;//scale;
+					}
+				}
+
+				v = new Array(numPixels);
+				for(let r = 0; r < rows; r++){
+			    for(let c = 0; c < cols; c++){
+						// v[c + r*cols] = 0;
+						v[c + r*cols] = Math.sin(c*2*Math.PI/(cols));//5*Math.sin(c/50);//Math.random()*2-1;//scale;
+						// v[c + r*cols] = Math.random()*2-1;//scale;
+					}
+				}
+
+				tu = new Array(rows*cols);
+				tv = new Array(rows*cols);
+
+				p = new Array(numPixels);
+				for(let r = 0; r < rows; r++){
+			    for(let c = 0; c < cols; c++){
+						p[c + r*cols] = 0;
+					}
+				}
+
+				g = new Array(numPixels);
+				for(let r = 0; r < rows; r++){
+			    for(let c = 0; c < cols; c++){
+						if(c > Math.floor(cols/4) && c < Math.floor(3*cols/4)){
+							g[c + r*cols] = 2;
+						}
+						else{
+							g[c+r*cols] = 0;
+						}
+					}
+				}
+
+				s = new Array(numPixels);
+				for(let r = 0; r < rows; r++){
+			    for(let c = 0; c < cols; c++){
+						s[c + r*cols] = 1;
+					}
+				}
+
+				mu = 0.1;
+				// mu = .9;
+				kappa = 0.01;//.01;//.01;
+
+				pigmentParameters =  [[0.22, 1.47, 0.57, 0.050, 0.003, 0.030, 0.02, 5.5, 0.81],
+			    [0.46, 1.07, 1.50, 1.280, 0.380, 0.210, 0.05, 7.0, 0.40],
+			    [0.10, 0.36, 3.45, 0.970, 0.650, 0.007, 0.05, 3.4, 0.81],
+			    [1.62, 0.61, 1.64, 0.010, 0.012, 0.003, 0.09, 1.0, 0.41],
+			    [1.52, 0.32, 0.25, 0.060, 0.260, 0.400, 0.01, 1.0, 0.31],
+			    [0.74, 1.54, 2.10, 0.090, 0.090, 0.004, 0.09, 9.3, 0.90],
+			    [0.14, 1.08, 1.68, 0.770, 0.015, 0.018, 0.02, 1.0, 0.63],
+			    [0.13, 0.81, 3.45, 0.005, 0.009, 0.007, 0.01, 1.0, 0.14],
+			    [0.06, 0.21, 1.78, 0.500, 0.880, 0.009, 0.06, 1.0, 0.08],
+			    [1.55, 0.47, 0.63, 0.010, 0.050, 0.035, 0.02, 1.0, 0.12],
+			    [0.86, 0.86, 0.06, 0.005, 0.005, 0.090, 0.01, 3.1, 0.91],
+			    [0.08, 0.11, 0.07, 1.250, 0.420, 1.430, 0.06, 1.0, 0.08]];
+
+					im = v;
+			}
+
+			function mainLoop(){
+
+				// for ( var t = 0; t < T; t += 1 ) {
+				document.getElementById("debug0,0").innerHTML = T;
+				moveWater();
+					T += 1;
+					// movePigment();
+					// transferPigment();
+					// simulateCapillaryFlow();
+					// im = renderLayer();
+					// renderLayer();
+				// }
+				// renderLayer();
+
+			}
+
+			function moveWater(){
+				updateVelocities();
+				// relaxDivergence();
+				// flowOutward();
+			}
+
+			function updateVelocities(){
+				// adjust based on height field
+				var maxU = 0;
+				for(var ui = 0; ui < rows*cols; ui+=1){
+					if(!isNaN(u[ui]) && Math.abs(u[ui]) > maxU){
+						maxU = Math.abs(u[ui]);
+					}
+				}
+				document.getElementById("debug0,2").innerHTML = Number(maxU.toFixed(2));
+				if(isNaN(maxU) || maxU > 10){
+					maxU = 10;
+				}
+
+				let maxV = 0;
+				for(var vi = 0; vi < rows*cols; vi+=1){
+					if(!isNaN(v[vi]) && Math.abs(v[vi]) > maxV){
+						maxU = Math.abs(v[vi]);
+					}
+				}
+				document.getElementById("debug0,3").innerHTML = Number(maxV.toFixed(2));
+				if(isNaN(maxV) || maxV > 10){
+					maxV = 10;
+				}
+				var delT = 1/maxU;
+				if(maxV > maxU){
+					delT = 1/maxV;
+				}
+
+				delT = Math.min(0.25,0.5*delT);
+
+				let scaleA = 0.5;
+
+				document.getElementById("debug0,1").innerHTML = Number(delT.toFixed(2));
+
+				let temp1, temp2, temp3, temp4, temp5, A, B, tempPressure;
+				for(let t = 0; t <  1;t += delT){// Math.floor(1/delT)){
+					for(let r = 0; r < rows; r++){
+						let rn1 = r-1;
+						if (rn1 < 0){
+							rn1 = rows-1;
+						}
+						let rp1 = r+1;
+						if (rp1 >= rows){
+							rp1 = 0;
+						}
+						for(let c = 0; c < cols; c++){
+							let cn1 = c-1;
+							if (cn1 < 0){
+								cn1 = cols-1;
+							}
+							let cp1 = c+1;
+							if (cp1 >= cols){
+								cp1 = 0;
+							}
+							temp1 = (u[cn1+r*cols] + u[c+r*cols])/2;
+							temp1 = temp1 * temp1;
+
+							temp2 = (u[c+r*cols] + u[cp1+r*cols])/2;
+							temp2 = temp2 * temp2;
+
+
+							temp3 = (u[c + rn1*cols] + u[c + r*cols])/2 * (v[c + rn1*cols] + v[cp1+rn1*cols])/2;
+							temp4 = (u[c + r*cols] + u[c+(rp1)*cols])/2 * (v[c+r*cols] + v[cp1+r*cols])/2;
+							// temp3 = (u[c + rn1*cols] + u[c + r*cols])/2 * (u[c + rn1*cols] + u[c + r*cols])/2;
+							// temp4 = (u[c + r*cols] + u[c+(rp1)*cols])/2 * (u[c + r*cols] + u[c+(rp1)*cols])/2;
+
+							A = 0;
+							A += temp1 - temp2;
+							A += temp3 - temp4;
+							A *= scaleA;
+
+							temp1 = u[cp1+r*cols];
+							temp2 = u[cn1+r*cols];
+							temp3 = u[c+(rp1)*cols];
+							temp4 = u[c+rn1*cols];
+							temp5 = u[c+r*cols];
+
+							B = temp1 + temp2 + temp3 + temp4 - 4*temp5;
+							// B = 0;
+							tempPressure =  p[c+r*cols] - p[cp1+r*cols];
+							// tempPressure = 0;
+							tu[c+r*cols] = temp5 + delT*(A + mu * B + tempPressure - kappa * temp5);
+
+							//////////////////////
+							/// V ///
+							/////////
+							temp1 = (v[c+rn1*cols] + v[c+r*cols])/2;
+							temp1 *= temp1;
+
+							temp2 = (v[c+r*cols] + v[c+rp1*cols])/2;
+							temp2 *= temp2;
+
+							temp3 = (u[cn1+r*cols] + u[cn1+(rp1)*cols])/2 * (v[cn1+r*cols] + v[c+r*cols])/2 ;
+							temp4 = (u[c+r*cols] + u[c+(rp1)*cols])/2 * (v[c+r*cols] + v[cp1+r*cols])/2;
+							// temp3 = (v[cn1+r*cols] + v[c+r*cols])/2 * (v[cn1+r*cols] + v[c+r*cols])/2;
+							// temp4 = (v[c+r*cols] + u[cp1+r*cols])/2 * (v[c+r*cols] + u[cp1+r*cols])/2;
+
+							A = 0;
+							A += temp1 - temp2;
+							A += temp3 - temp4;
+							// A -= temp4;
+							// A *= scaleA;
+
+							temp1 = v[cp1+r*cols];
+							temp2 = v[cn1+r*cols];
+							temp3 = v[c+(rp1)*cols];
+							temp4 = v[c+rn1*cols];
+							temp5 = v[c+r*cols];
+
+							B = temp1 + temp2 + temp3 + temp4 - 4*temp5;
+							// B = 0;
+							tempPressure = p[c+r*cols] - p[c+(rp1)*cols];
+							tv[c+r*cols] = temp5 + delT*(A + mu * B + tempPressure - kappa * temp5);
+						}
+					}
+					let maxVel = 2;
+					for(let r = 0; r < rows; r+=1){
+						for(let c = 0; c < cols; c+= 1){
+							u[c + r*cols] = tu[c + r*cols];
+							if(Math.abs(u[c+r*cols]) > maxVel || isNaN(u[c+r*cols])){
+								u[c+r*cols] = maxVel*((u[c+r*cols]>0)*2-1);
+							}
+
+							v[c + r*cols] = tv[c + r*cols];
+							if(Math.abs(v[c+r*cols]) > maxVel || isNaN(v[c+r*cols])){
+								v[c+r*cols] = maxVel*((v[c+r*cols]>0)*2-1);
+							}
+						}
+					}
+
+					renderLayer();
+				}
+
+				return;
+			}
+
+			// function relaxDivergence(){
+			//
+			// }
+			//
+			// function flowOutward(){
+			//
+			// }
+
+			// function movePigment(){
+			//
+			// }
+			//
+			// function transferPigment(){
+			//
+			// }
+			//
+			// function simulateCapillaryFlow(){
+			//
+			// }
+
+			function renderLayer(){
+
+				// container = document.getElementById( 'container' );
+				// container.innerHTML = "";
+				//
+				// // renderer = new THREE.WebGLRenderer( { antialias: true } );
+				// // renderer.setPixelRatio( window.devicePixelRatio );
+				// // renderer.setSize( window.innerWidth, window.innerHeight );
+				// container.appendChild( renderer.domElement );
+				//
+				// scene = new THREE.Scene();
+				while(scene.children.length > 0){
+				    scene.remove(scene.children[0]);
+				}
+				scene.background = new THREE.Color( 0xbfd1e5 );
+				//
+				// camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 10, 20000 );
+				//
+				// controls = new OrbitControls( camera, renderer.domElement );
+				// controls.minDistance = 1000;
+				// controls.maxDistance = 10000;
+				// controls.maxPolarAngle = Math.PI / 2;
+				//
+				// //
+				//
+				var data = getIm();//generateHeight( worldWidth, worldDepth );
+
+				controls.target.y = data[ worldHalfWidth + worldHalfDepth * worldWidth ] + 500;
+				camera.position.y = controls.target.y + 7000;
+				// camera.position.x = 4000;
+				// controls.update();
+
+				geometry = new THREE.PlaneBufferGeometry( 7500, 7500, worldWidth - 1, worldDepth - 1 );
+				geometry.rotateX( - Math.PI / 2 );
+
+				var vertices = geometry.attributes.position.array;
+
+				for ( var i = 0, j = 0, l = vertices.length; i < l; i ++, j += 3 ) {
+
+					vertices[ j + 1 ] = data[ i ] * 10;
+
+				}
+
+				geometry.computeFaceNormals(); // needed for helper
+
+				//
+				texture = new THREE.CanvasTexture( generateTexture( data, worldWidth, worldDepth ) );
+				texture.wrapS = THREE.ClampToEdgeWrapping;
+				texture.wrapT = THREE.ClampToEdgeWrapping;
+
+				mesh = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { map: texture } ) );
+				scene.add( mesh );
+
+				// var geometry = new THREE.ConeBufferGeometry( 20, 100, 3 );
+				// geometry.translate( 0, 50, 0 );
+				// geometry.rotateX( Math.PI / 2 );
+				// helper = new THREE.Mesh( geometry, new THREE.MeshNormalMaterial() );
+				scene.add( helper );
+
+				// container.addEventListener( 'mousemove', onMouseMove, false );
+				//
+				// stats = new Stats();
+				// container.appendChild( stats.dom );
+
+				//
+
+				// window.addEventListener( 'resize', onWindowResize, false );
+
+
+				return;
+			}
+
+			function getIm(){
+				return im;
+			}
+
+
+		</script>
+
+	</body>
+</html>
